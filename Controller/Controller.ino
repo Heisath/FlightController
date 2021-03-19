@@ -124,9 +124,9 @@ void setup() {
 
 	Joystick.setXAxisRange(-900, 900);
 	Joystick.setYAxisRange(-450, 450);
-	Joystick.setThrottleRange(0, 580);
-	Joystick.setRxAxisRange(0, 580);
-	Joystick.setRyAxisRange(0, 580);
+	Joystick.setThrottleRange(0, 500);
+	Joystick.setRxAxisRange(0, 500);
+	Joystick.setRyAxisRange(0, 500);
 
 	Joystick.setRudderRange(-450, 450);
 
@@ -196,7 +196,7 @@ void loop() {
 			roll = 0;
 		}
 
-		float throttle = constrain(analogRead(AN_THROTTLE) - 190, 0, 580);
+		float throttle = constrain(analogRead(AN_THROTTLE) - 270, 0, 500);
 
 
 		Joystick.setXAxis(roll * 10.0);
@@ -224,8 +224,22 @@ void loop() {
 				Joystick.setRxAxis(throttle);
 			else if (selectedLeverPosition == Mixture)
 				Joystick.setRyAxis(throttle);
-			else if (selectedLeverPosition == Throttle)
-				Joystick.setThrottle(throttle);
+			else if (selectedLeverPosition == Throttle) 
+			{
+				
+
+				if (!digitalRead(SW_REVERSE_THRUST)) // only allow reverse thrust in throttle setting
+				{
+					Joystick.pressButton(31);
+					Joystick.setThrottle(100);
+				}
+				else
+				{
+					Joystick.releaseButton(31);
+					Joystick.setThrottle(throttle);
+				}
+
+			}
 		}
 
 		if (rotary_left.Button()) {
@@ -290,6 +304,7 @@ void loop() {
 			Joystick.releaseButton(0);
 
 		
+
 				
 		Joystick.sendState();
 
