@@ -4,42 +4,31 @@
 
 //#define DEBUG
 
-// I2C SDA: D2 SCL: D3
 
-/* // OLD CONFIG // */
+
+// I2C SDA: D2 SCL: D3
 // normal switches
-#define SW_RIGHT_0			A0
-#define SW_RIGHT_1			A1
+#define SW_RIGHT_0			4
+#define SW_RIGHT_1			5
 #define SW_RIGHT_14_L		6
 #define SW_RIGHT_14_R		7
-#define SW_AILERON_RUDDER	4
-#define SW_REVERSE_THRUST   A3
+#define SW_AILERON_RUDDER	A0
+#define SW_REVERSE_THRUST   A4
 
 // rotary need pcint and shared bank
-#define ROT0_BTN			8
-#define ROT0_LEFT			9
-#define ROT0_RIGHT			10
-#define ROT1_BTN			14
-#define ROT1_LEFT			15
-#define ROT1_RIGHT			16
+#define ROT0_BTN			9
+#define ROT0_LEFT			0
+#define ROT0_RIGHT			15
+
+#define ROT1_BTN			16
+#define ROT1_LEFT			1
+#define ROT1_RIGHT			14
 
 // analog 
-#define AN_THROTTLE			A2
+#define AN_THROTTLE			A5
 
 // output
-#define LED_CALIBRATION		5
-
- uint8_t ROT0_BTN_BIT;
- uint8_t ROT0_LEFT_BIT;
- uint8_t ROT0_RIGHT_BIT;
-
- uint8_t ROT1_BTN_BIT;
- uint8_t ROT1_LEFT_BIT;
- uint8_t ROT1_RIGHT_BIT;
-
- uint8_t ROT_BIT_MASK;
- uint8_t ROT0_BIT_MASK;
- uint8_t ROT1_BIT_MASK;
+#define LED_CALIBRATION		13
 
 
 Joystick_ Joystick(JOYSTICK_DEFAULT_REPORT_ID,
@@ -72,24 +61,12 @@ uint32_t currentTime;
 uint32_t nextUpdate = 0;
 uint8_t calibBlinkState = HIGH;
 
+float yawOffset = 0, rudder = 0;
+
 uint32_t nextBlink;
 uint8_t blinkEnable;
 
 void setup() {
-
-	ROT0_BTN_BIT = digitalPinToBitMask(ROT0_BTN);
-	ROT0_LEFT_BIT = digitalPinToBitMask(ROT0_LEFT);
-	ROT0_RIGHT_BIT = digitalPinToBitMask(ROT0_RIGHT);
-
-	ROT1_BTN_BIT = digitalPinToBitMask(ROT1_BTN);
-	ROT1_LEFT_BIT = digitalPinToBitMask(ROT1_LEFT);
-	ROT1_RIGHT_BIT = digitalPinToBitMask(ROT1_RIGHT);
-
-	ROT_BIT_MASK = (ROT0_BTN_BIT | ROT0_LEFT_BIT | ROT0_RIGHT_BIT |
-		ROT1_BTN_BIT | ROT1_LEFT_BIT | ROT1_RIGHT_BIT);
-
-	ROT0_BIT_MASK = ROT0_LEFT_BIT | ROT0_RIGHT_BIT;
-	ROT1_BIT_MASK = ROT1_LEFT_BIT | ROT1_RIGHT_BIT;
 
 	pinMode(SW_AILERON_RUDDER, INPUT_PULLUP);
 	pinMode(SW_RIGHT_0, INPUT_PULLUP);
@@ -103,20 +80,17 @@ void setup() {
 
 	pinMode(LED_CALIBRATION, OUTPUT);
 	digitalWrite(LED_CALIBRATION, HIGH);
-	
+
 	pinMode(ROT0_BTN, INPUT_PULLUP);
 	pinMode(ROT0_LEFT, INPUT_PULLUP);
 	pinMode(ROT0_RIGHT, INPUT_PULLUP);
+
 	pinMode(ROT1_BTN, INPUT_PULLUP);
 	pinMode(ROT1_LEFT, INPUT_PULLUP);
 	pinMode(ROT1_RIGHT, INPUT_PULLUP);
 
-	PCMSK0 |= (1 << digitalPinToPCMSKbit(ROT0_BTN)) |
-		(1 << digitalPinToPCMSKbit(ROT0_LEFT)) |
-		(1 << digitalPinToPCMSKbit(ROT1_BTN)) |
-		(1 << digitalPinToPCMSKbit(ROT1_LEFT));
-	
-	PCICR |= 1;
+	attachInterrupt(digitalPinToInterrupt(ROT0_LEFT), rot0_int, FALLING);
+	attachInterrupt(digitalPinToInterrupt(ROT1_LEFT), rot1_int, FALLING);
 
 #ifdef DEBUG
 	Serial.begin(115200);
@@ -182,27 +156,28 @@ void loop() {
 			digitalWrite(LED_CALIBRATION, HIGH);
 		}
 
-		vecOrient = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
-		float x = vecOrient.x(), pitch = vecOrient.z(), roll = vecOrient.y(), rudder;
 
+		imu::Quaternion quat = bno.getQuat();
+		vecOrient = quat.toEuler() * (180.0 / PI);//bno.getVector(Adafruit_BNO055::VECTOR_EULER);
+		float yaw = vecOrient.x(), roll = vecOrient.z(), pitch = vecOrient.y();
+		
+		if (digitalRead(SW_AILERON_RUDDER) == LOW) {
+			yawOffset = yaw;
+		}
+		yaw = (yaw - yawOffset);
+		
 		roll = constrain(roll, -90, 90);
 		pitch = constrain(pitch, -45, 45);
-		rudder = constrain(roll, -45, 45);
-
-		if (digitalRead(SW_AILERON_RUDDER) == LOW) {
-			rudder = 0;
-		}
-		else {
-			roll = 0;
-		}
-
+		if (yaw > -25 && yaw < 25)
+			rudder = constrain(yaw, -22.5, 22.5);
+			
 		float throttle = constrain(analogRead(AN_THROTTLE) - 270, 0, 500);
 
 
 		Joystick.setXAxis(roll * 10.0);
 		Joystick.setYAxis(pitch * 10.0);
-		Joystick.setRudder(rudder * 10.0);
-		
+		Joystick.setRudder(rudder * 20.0);
+
 		oldLeverPosition = newLeverPosition;
 		if (digitalRead(SW_RIGHT_14_R) == LOW)
 			newLeverPosition = Throttle;
@@ -214,35 +189,53 @@ void loop() {
 		if (newLeverPosition != oldLeverPosition) {
 			nextLeverChange = currentTime + leverChangeDelay;
 			leverChangeInProg = true;
-		} else if (leverChangeInProg && (currentTime > nextLeverChange)) {
+		}
+		else if (leverChangeInProg && (currentTime > nextLeverChange)) {
 			selectedLeverPosition = newLeverPosition;
 			leverChangeInProg = false;
 		}
-		
-		if (!leverChangeInProg) {
-			if (selectedLeverPosition == PropRPM)
-				Joystick.setRxAxis(throttle);
-			else if (selectedLeverPosition == Mixture)
-				Joystick.setRyAxis(throttle);
-			else if (selectedLeverPosition == Throttle) 
-			{
-				
 
+		if (!leverChangeInProg) {
+			if (selectedLeverPosition == PropRPM) {
+				if (!digitalRead(SW_REVERSE_THRUST)) // only allow reverse thrust in throttle setting
+				{
+					Joystick.pressButton(29);
+					Joystick.setRxAxis(500);
+				}
+				else
+				{
+					Joystick.releaseButton(29);
+					Joystick.setRxAxis(throttle);
+				}
+			}
+			else if (selectedLeverPosition == Mixture) {
+				if (!digitalRead(SW_REVERSE_THRUST)) // only allow reverse thrust in throttle setting
+				{
+					Joystick.pressButton(30);
+					Joystick.setRyAxis(throttle);
+				}
+				else
+				{
+					Joystick.releaseButton(30);
+					Joystick.setRyAxis(throttle);
+				}
+			}
+			else if (selectedLeverPosition == Throttle)
+			{
 				if (!digitalRead(SW_REVERSE_THRUST)) // only allow reverse thrust in throttle setting
 				{
 					Joystick.pressButton(31);
-					Joystick.setThrottle(100);
+					Joystick.setThrottle(500);
 				}
 				else
 				{
 					Joystick.releaseButton(31);
 					Joystick.setThrottle(throttle);
 				}
-
 			}
 		}
 
-		if (rotary_left.Button()) {
+		if (!digitalRead(ROT0_BTN)) {
 			Joystick.pressButton(15);
 #ifdef DEBUG	
 			Serial.println("LEFT BUTTON");
@@ -271,7 +264,7 @@ void loop() {
 
 		int rightModifier = !digitalRead(SW_RIGHT_1) ? 3 : 0;
 
-		if (rotary_right.Button()) {
+		if (!digitalRead(ROT1_BTN)) {
 			Joystick.pressButton(18 + rightModifier);
 #ifdef DEBUG
 			Serial.println("RIGHT BUTTON");
@@ -303,9 +296,8 @@ void loop() {
 		else
 			Joystick.releaseButton(0);
 
-		
 
-				
+
 		Joystick.sendState();
 
 #ifdef DEBUG
@@ -334,32 +326,25 @@ float mapf(float x, float in_min, float in_max, float out_min, float out_max) {
 	return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
-ISR(PCINT0_vect) {
-
-	uint8_t state = PINB & ROT_BIT_MASK;
+void rot0_int() {
 	
-	if ((state & ROT0_BTN_BIT) == 0)
-	{
-		rotary_left._int_button = true;
-	}
-	else if ((state & ROT1_BTN_BIT) == 0)
-	{
-		rotary_right._int_button = true;
-	}
-	else if ((state & ROT0_BIT_MASK) == ROT0_LEFT_BIT) {
+	
+	if (digitalRead(ROT0_RIGHT) == 1) {
 		rotary_left._int_left = true;
 	}
-	else if ((state & ROT0_BIT_MASK) == 0)
+	else if (digitalRead(ROT0_RIGHT) == 0)
 	{
 		rotary_left._int_right = true;
 	}
-	else if ((state & ROT1_BIT_MASK) == ROT1_LEFT_BIT) {
+
+}
+
+void rot1_int() {
+	if (digitalRead(ROT1_RIGHT) == 1) {
 		rotary_right._int_left = true;
 	}
-	else if ((state & ROT1_BIT_MASK) == 0)
+	else if (digitalRead(ROT1_RIGHT) == 0)
 	{
 		rotary_right._int_right = true;
 	}
-
-
 }
